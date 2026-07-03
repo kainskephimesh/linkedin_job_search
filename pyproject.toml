@@ -1,0 +1,15 @@
+[project]
+name = "mcp-linkedin"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "mcp>=1.0.0",
+    "openai>=1.30.0",
+    "pandas>=2.0.0",
+    "playwright>=1.44.0",
+    "pypdf>=6.14.2",
+    "python-dotenv>=1.0.0",
+    "streamlit>=1.38.0",
+]

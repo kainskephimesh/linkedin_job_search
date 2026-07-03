@@ -1,0 +1,34 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+mcp_server_backup.py
+
+# LinkedIn session / scrape state
+.li_session/
+logs/
+debug_feed.png
+debug_feed.html
+diag_feed.png
+diag_feed.html
+linkedin_jobs.txt
+
+# Streamlit
+.streamlit/
+
+# IDE
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
