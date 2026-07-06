@@ -62,7 +62,7 @@ IMPORTANT TOOL ORDER:
   - Always finish by calling save_results_to_file.
 
 You must NOT post, like, comment, send messages, or perform any write action on LinkedIn.
-Always confirm completion with a summary table showing Company | Role | Email | Location."""
+Always confirm completion with a summary table showing Company | Role | Location | Apply Link | Job Poster."""
 
 
 def prompt_for_filters() -> dict:
@@ -84,7 +84,10 @@ def prompt_for_filters() -> dict:
     work_type = input("Workplace type (Any, Remote, Hybrid, On-site) [Any]: ").strip()
     work_type = work_type or "Any"
 
-    return {"roles": roles, "locations": locations, "max_exp_years": max_exp_years, "work_type": work_type}
+    search_mode = input("Search mode (jobs, feed, both) [jobs]: ").strip().lower()
+    search_mode = search_mode if search_mode in ["jobs", "feed", "both"] else "jobs"
+
+    return {"roles": roles, "locations": locations, "max_exp_years": max_exp_years, "work_type": work_type, "search_mode": search_mode}
 
 
 _EXPAND_FILTERS_SYSTEM = """\
@@ -190,20 +193,42 @@ async def run_agent():
             print(f"📦 Tools available: {[t.name for t in mcp_tools]}\n")
             _log(f"Tools available: {[t.name for t in mcp_tools]}")
 
+            mode = filters.get("search_mode", "jobs")
+            if mode == "feed":
+                initial_instruction = (
+                    "Please start the job search by checking the LinkedIn Posts feed.\n"
+                    "Call search_linkedin_job_posts with "
+                    f"roles=\"{filters['roles']}\", locations=\"{filters['locations']}\", "
+                    f"max_exp_years={filters['max_exp_years']}.\n"
+                    "Do NOT call scrape_linkedin_jobs_tab.\n"
+                    "Save all results to 'linkedin_jobs.txt'."
+                )
+                first_tool = "search_linkedin_job_posts"
+            elif mode == "jobs":
+                initial_instruction = (
+                    "Please start the job search by checking the LinkedIn Jobs tab.\n"
+                    "Call scrape_linkedin_jobs_tab with "
+                    f"roles=\"{filters['roles']}\", locations=\"{filters['locations']}\", "
+                    f"max_exp_years={filters['max_exp_years']}, work_type=\"{filters['work_type']}\".\n"
+                    "Do NOT call search_linkedin_job_posts.\n"
+                    "Save all results to 'linkedin_jobs.txt'."
+                )
+                first_tool = "scrape_linkedin_jobs_tab"
+            else:
+                initial_instruction = (
+                    "Please start the job search by checking the LinkedIn Jobs tab first.\n"
+                    "Call scrape_linkedin_jobs_tab with "
+                    f"roles=\"{filters['roles']}\", locations=\"{filters['locations']}\", "
+                    f"max_exp_years={filters['max_exp_years']}, work_type=\"{filters['work_type']}\".\n"
+                    "If the jobs tab returns 0 results, fall back to search_linkedin_job_posts "
+                    "with the same parameters.\n"
+                    "Save all results to 'linkedin_jobs.txt'."
+                )
+                first_tool = "scrape_linkedin_jobs_tab"
+
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "Please start the job search by checking the LinkedIn Jobs tab first.\n"
-                        "Call scrape_linkedin_jobs_tab with "
-                        f"roles=\"{filters['roles']}\", locations=\"{filters['locations']}\", "
-                        f"max_exp_years={filters['max_exp_years']}, work_type=\"{filters['work_type']}\".\n"
-                        "If the jobs tab returns 0 results, fall back to search_linkedin_job_posts "
-                        "with the same parameters.\n"
-                        "Save all results to 'linkedin_jobs.txt'."
-                    ),
-                },
+                {"role": "user", "content": initial_instruction},
             ]
 
             allowed_tools = {
@@ -220,11 +245,11 @@ async def run_agent():
                 print(f"\n🔄 Agent iteration {iteration}...")
                 _log(f"Agent iteration {iteration} starting.")
 
-                # Force first call to use feed scroll
+                # Force first call to use the requested initial tool
                 if iteration == 1:
                     tool_choice = {
                         "type": "function",
-                        "function": {"name": "scrape_linkedin_jobs_tab"}
+                        "function": {"name": first_tool}
                     }
                 else:
                     tool_choice = "auto"

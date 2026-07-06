@@ -609,10 +609,25 @@ async def scrape_linkedin_jobs_tab(
                         except Exception:
                             pass
 
+                        # Try to extract the Job Poster (Hiring Team) profile link
+                        poster_link = "N/A"
+                        try:
+                            poster_el = await page.query_selector(".hirer-profile-card a[href*='/in/'], .jobs-poster a[href*='/in/'], .jobs-advocate-profile a[href*='/in/']")
+                            if not poster_el:
+                                poster_el = await page.query_selector(".jobs-search__job-details--container a[href*='/in/']")
+                            
+                            if poster_el:
+                                href = await poster_el.get_attribute("href")
+                                if href:
+                                    poster_link = ("https://www.linkedin.com" + href if href.startswith("/") else href).split("?")[0]
+                        except Exception:
+                            pass
+
                         raw_matches.append({
                             "full_text": full_text,
                             "post_url": post_url,
-                            "apply_link": apply_link
+                            "apply_link": apply_link,
+                            "poster_link": poster_link
                         })
                         _log(f"  📌 Collected Job: {full_text[:80].replace(chr(10), ' ')!r}")
 
@@ -635,6 +650,7 @@ async def scrape_linkedin_jobs_tab(
             full_text = raw["full_text"]
             post_url  = raw["post_url"]
             ui_apply_link = raw.get("apply_link", post_url)
+            poster_link = raw.get("poster_link", "N/A")
             try:
                 extracted = await _llm_extract_fields(full_text)
                 if not extracted.get("is_job_post", True):
@@ -682,6 +698,7 @@ async def scrape_linkedin_jobs_tab(
                 "posted":     posted,
                 "post_url":   post_url,
                 "apply_link": apply_link,
+                "poster_link": poster_link,
                 "snippet":    full_text[:400].replace("\n", " ").strip(),
             })
             _log(f"  ✅ Matched: {company} — {role_found}")
@@ -819,16 +836,43 @@ async def search_linkedin_job_posts(
                         stats["skipped_short"] += 1
                         continue
 
-                    # Post URL (quick — no LLM here)
-                    url_el = await card.query_selector(
-                        "a[href*='/posts/'], a[href*='/feed/update/'], a[href*='activity']"
-                    )
+                    # Post URL extraction (Robust 3-stage fallback)
                     post_url = "N/A"
-                    if url_el:
-                        href = await url_el.get_attribute("href")
-                        if href:
-                            post_url = ("https://www.linkedin.com" + href
-                                        if href.startswith("/") else href)
+                    try:
+                        # Strategy 1: data-urn attribute
+                        urn = await card.evaluate('''el => {
+                            let node = el.querySelector('[data-urn^="urn:li:activity:"], [data-urn^="urn:li:ugcPost:"], [data-urn^="urn:li:share:"]');
+                            if (node) return node.getAttribute('data-urn');
+                            // Also check the element itself
+                            if (el.getAttribute('data-urn')) return el.getAttribute('data-urn');
+                            return null;
+                        }''')
+                        if urn and "urn:li:" in urn:
+                            post_url = f"https://www.linkedin.com/feed/update/{urn}/"
+                        else:
+                            # Strategy 2: All hrefs in the card
+                            all_hrefs = await card.evaluate('''el => {
+                                return Array.from(el.querySelectorAll('a')).map(a => a.href);
+                            }''')
+                            for href in all_hrefs:
+                                if href and any(x in href for x in ["urn:li:activity:", "urn:li:ugcPost:", "urn:li:share:", "/posts/", "/feed/update/"]):
+                                    post_url = href.split("?")[0]
+                                    break
+                            
+                            # Strategy 3: Regex the raw HTML for the URN
+                            if post_url == "N/A":
+                                html = await card.inner_html()
+                                import re
+                                # Catch standard and URL-encoded URNs of any type (activity, ugcPost, share, etc.)
+                                match = re.search(r'(urn:li:[a-zA-Z]+:\d+)', html)
+                                if not match:
+                                    match = re.search(r'(urn%3Ali%3A[a-zA-Z]+%3A\d+)', html)
+                                    
+                                if match:
+                                    raw_urn = match.group(1).replace("%3A", ":")
+                                    post_url = f"https://www.linkedin.com/feed/update/{raw_urn}/"
+                    except Exception as e:
+                        _log(f"Error getting post_url: {e}")
 
                     dedup_keys = _dedup_keys(full_text, post_url)
                     if any(k in seen for k in dedup_keys):
@@ -958,22 +1002,22 @@ async def save_results_to_file(results_json: str, output_path: str = "linkedin_j
         return "❌ Invalid JSON."
 
     lines = [
-        "=" * 95,
+        "=" * 135,
         "LinkedIn AI/ML Job Posts — Last 24 Hours",
         f"Generated  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"Total      : {len(posts)} posts found",
-        "=" * 95,
+        "=" * 135,
         "",
-        f"{'Company':<30} | {'Role':<28} | {'Emails':<35} | {'Location':<20} | {'Experience'}",
+        f"{'Company':<25} | {'Role':<25} | {'Location':<15} | {'Apply Link':<30} | {'Job Poster (HR)'}",
         "-" * 135,
     ]
     for p in posts:
         lines.append(
-            f"{p.get('company','N/A'):<30} | "
-            f"{p.get('role','N/A'):<28} | "
-            f"{p.get('emails','N/A'):<35} | "
-            f"{p.get('location','N/A'):<20} | "
-            f"{p.get('experience','N/A')}"
+            f"{p.get('company','N/A')[:25]:<25} | "
+            f"{p.get('role','N/A')[:25]:<25} | "
+            f"{p.get('location','N/A')[:15]:<15} | "
+            f"{p.get('apply_link', p.get('post_url', 'N/A'))[:30]:<30} | "
+            f"{p.get('poster_link', 'N/A')}"
         )
 
     lines += ["", "=" * 95, "DETAILED VIEW", "=" * 95]
@@ -988,6 +1032,7 @@ async def save_results_to_file(results_json: str, output_path: str = "linkedin_j
             f"    Posted     : {p.get('posted','N/A')}",
             f"    Post URL   : {p.get('post_url','N/A')}",
             f"    Apply Link : {p.get('apply_link','N/A')}",
+            f"    Job Poster : {p.get('poster_link','N/A')}",
             f"    Snippet    : {p.get('snippet','N/A')}",
         ]
 

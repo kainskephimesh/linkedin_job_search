@@ -22,7 +22,7 @@ from resume_utils import extract_text_from_resume, parse_resume_with_llm, score_
 
 st.set_page_config(page_title="LinkedIn Job Scraper", page_icon="🔎", layout="wide")
 
-st.title("🔎 LinkedIn AI/ML Job Scraper")
+st.title("🔎 LinkedIn Job Scraper")
 st.caption(
     "Scrapes the LinkedIn Jobs tab (last 24h) for roles matching your filters, "
     "with LLM-assisted role expansion, location correction, and field extraction."
@@ -80,6 +80,7 @@ with st.sidebar:
     locations_input = st.text_input("Location(s), comma-separated", key="locations_input")
     max_exp_years = st.slider("Max years of experience", 0, 20, key="max_exp_years")
     work_type = st.selectbox("Workplace type", ["Any", "Remote", "Hybrid", "On-site"])
+    search_mode = st.selectbox("Search Mode", ["jobs", "feed", "both"], help="jobs: Official Jobs tab. feed: User posts. both: Fallback to feed if jobs is empty.")
     max_posts = st.slider("Max results", 5, 100, 30, step=5)
     expand_with_llm = st.checkbox(
         "Expand role aliases & correct location typos with LLM", value=True
@@ -112,28 +113,33 @@ if "raw_message" not in st.session_state:
     st.session_state.raw_message = None
 
 
-def run_search(roles, locations, max_exp_years, work_type, max_posts, expand, headless, resume_text):
+def run_search(roles, locations, max_exp_years, work_type, max_posts, expand, headless, resume_text, search_mode):
     async def _run():
         filters = {
             "roles": roles,
             "locations": locations,
             "max_exp_years": max_exp_years,
             "work_type": work_type,
+            "search_mode": search_mode,
         }
         if expand:
             filters = await expand_filters_with_llm(filters)
 
-        raw = await mcp_server.scrape_linkedin_jobs_tab(
-            roles=filters["roles"],
-            locations=filters["locations"],
-            max_exp_years=filters["max_exp_years"],
-            work_type=filters["work_type"],
-            max_posts=max_posts,
-            headless=headless,
-        )
-        results = json.loads(raw) if raw.strip().startswith("[") else None
+        results = None
+        raw = ""
 
-        if not results:
+        if search_mode in ["jobs", "both"]:
+            raw = await mcp_server.scrape_linkedin_jobs_tab(
+                roles=filters["roles"],
+                locations=filters["locations"],
+                max_exp_years=filters["max_exp_years"],
+                work_type=filters["work_type"],
+                max_posts=max_posts,
+                headless=headless,
+            )
+            results = json.loads(raw) if raw.strip().startswith("[") else None
+
+        if not results and search_mode in ["feed", "both"]:
             raw = await mcp_server.search_linkedin_job_posts(
                 roles=filters["roles"],
                 locations=filters["locations"],
@@ -164,6 +170,7 @@ if run_button:
                 roles_input, locations_input, max_exp_years, work_type,
                 max_posts, expand_with_llm, headless=not show_browser,
                 resume_text=st.session_state.resume_text if score_with_resume else None,
+                search_mode=search_mode,
             )
             st.session_state.results = results
             st.session_state.filters = filters
@@ -176,7 +183,7 @@ if st.session_state.get("filters"):
     st.info(
         f"**Roles searched:** {f['roles']}  \n"
         f"**Locations searched:** {f['locations']}  \n"
-        f"**Max experience:** {f['max_exp_years']} yrs · **Workplace:** {f['work_type']}"
+        f"**Max experience:** {f['max_exp_years']} yrs · **Workplace:** {f['work_type']} · **Mode:** {f.get('search_mode', 'jobs')}"
     )
 
 if st.session_state.results:
@@ -190,9 +197,18 @@ if st.session_state.results:
     df = pd.DataFrame(results)
     display_cols = [
         c for c in (["fit_score"] if has_fit_score else [])
-        + ["company", "role", "location", "experience", "emails", "phones", "posted", "apply_link"]
+        + ["company", "role", "location", "experience", "emails", "phones", "posted"]
         if c in df.columns
     ]
+    
+    # Dynamically show/hide link columns based on search mode
+    search_mode = st.session_state.filters.get("search_mode", "jobs")
+    if "post_url" in df.columns: display_cols.append("post_url")
+    
+    if search_mode != "feed":
+        if "apply_link" in df.columns: display_cols.append("apply_link")
+        if "poster_link" in df.columns: display_cols.append("poster_link")
+        
     st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
 
     csv_bytes = df.to_csv(index=False).encode("utf-8")
@@ -216,8 +232,12 @@ if st.session_state.results:
             st.markdown(f"**Emails:** {row.get('emails', 'N/A')}")
             st.markdown(f"**Phones:** {row.get('phones', 'N/A')}")
             st.markdown(f"**WhatsApp:** {row.get('whatsapp', 'N/A')}")
+            if row.get("post_url", "N/A") != "N/A":
+                st.markdown(f"**Original Post:** {row['post_url']}")
             if row.get("apply_link", "N/A") != "N/A":
                 st.markdown(f"**Apply:** {row['apply_link']}")
+            if row.get("poster_link", "N/A") != "N/A":
+                st.markdown(f"**Job Poster:** {row['poster_link']}")
             st.caption(row.get("snippet", ""))
 elif st.session_state.raw_message:
     st.warning("No results found.")
